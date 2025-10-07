@@ -7,6 +7,22 @@ from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 
 st.set_page_config(page_title="AutoInit Linear Regression (CRISP-DM)", page_icon="📈", layout="wide")
 
+# ---------- Session State Initialization ----------
+# Initialize session state for controls if they don't exist.
+# This preserves the settings across reruns.
+defaults = {
+    "n_samples": 200,
+    "noise": 2.5,
+    "lr_init": 1e-2,
+    "n_iters": 500,
+    "seed_data": int(time.time()) % 10**6,
+    "seed_init": int(time.time() * 1.7) % 10**6,
+    "use_standardize": True,
+}
+for key, value in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
+
 # ---------- Sidebar: CRISP-DM ----------
 with st.sidebar:
     st.title("CRISP-DM 導覽")
@@ -25,31 +41,47 @@ with st.sidebar:
 st.title("📈 線性回歸（自動亂數初始值 + 視覺化）— sklearn + CRISP-DM")
 st.caption("內建數值穩定化：特徵標準化、學習率自動回退（loss 上升時），避免 NaN/Inf。")
 
-# ---------- Controls ----------
-colA, colB, colC, colD = st.columns([1.2, 1.2, 1.2, 1.4], vertical_alignment="bottom")
-with colA:
-    n_samples = st.slider("樣本數", 30, 1000, 200, step=10)
-with colB:
-    noise = st.slider("噪聲標準差", 0.0, 10.0, 2.5, 0.1)
-with colC:
-    lr_init = st.slider("初始學習率 (GD)", 1e-5, 1e-1, 1e-2, format="%.5f")
-with colD:
-    n_iters = st.slider("最大迭代次數", 10, 3000, 500, step=10)
+# ---------- CSS for Bottom Toolbar ----------
+st.markdown("""
+<style>
+    /* Make sure the main container has some bottom padding */
+    .main .block-container {
+        padding-bottom: 15rem; /* Adjust as needed */
+    }
+    .x-toolbar {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        width: 100%;
+        background-color: rgba(250, 250, 250, 0.98); /* Semi-transparent white */
+        border-top: 1px solid #e6e6e6;
+        padding: 12px 24px;
+        box-shadow: 0 -2px 8px rgba(0,0,0,0.05);
+        z-index: 999990; /* Below Streamlit's default header/sidebar z-index */
+        backdrop-filter: blur(10px);
+    }
+    /* Use a container inside to manage width */
+    .x-toolbar-container {
+        max-width: 100%;
+    }
+    /* Style for the form itself to remove Streamlit's default padding */
+    .x-toolbar .stForm {
+        background: none;
+        border: none;
+        padding: 0;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-colE, colF, colG = st.columns([1.2, 1.2, 1.6], vertical_alignment="bottom")
-with colE:
-    seed_data = st.number_input("資料亂數種子", min_value=0, value=int(time.time()) % 10**6, step=1)
-with colF:
-    seed_init = st.number_input("參數初始亂數種子", min_value=0, value=(int(time.time()*1.7) % 10**6), step=1)
-with colG:
-    use_standardize = st.checkbox("使用特徵標準化（建議）", value=True, help="對 X、y 做標準化再用 GD，最後再轉回原始座標以便繪圖/評估。")
 
 # ---------- Data Generation ----------
-rng_data = np.random.default_rng(seed_data)
+# Use values from session_state
+rng_data = np.random.default_rng(st.session_state.seed_data)
 true_w = rng_data.normal(loc=3.0, scale=1.0)     # 真實斜率
 true_b = rng_data.normal(loc=1.0, scale=2.0)     # 真實截距
-X = rng_data.uniform(-10, 10, size=(n_samples, 1))
-y = true_w * X[:, 0] + true_b + rng_data.normal(0, noise, size=n_samples)
+X = rng_data.uniform(-10, 10, size=(st.session_state.n_samples, 1))
+y = true_w * X[:, 0] + true_b + rng_data.normal(0, st.session_state.noise, size=st.session_state.n_samples)
 
 # ---------- Split ----------
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
@@ -61,7 +93,7 @@ def standardize(train_arr, test_arr):
     std = std if std > 1e-12 else 1.0  # 避免除以 0
     return (train_arr - mean) / std, (test_arr - mean) / std, mean, std
 
-if use_standardize:
+if st.session_state.use_standardize:
     Xtr_s, Xte_s, mx, sx = standardize(X_train[:, 0], X_test[:, 0])
     ytr_s, yte_s, my, sy = standardize(y_train, y_test)
     Xtr_s = Xtr_s.reshape(-1, 1)
@@ -74,7 +106,7 @@ else:
     my = np.mean(y_train);       sy = np.std(y_train);       sy = sy if sy > 1e-12 else 1.0
 
 # ---------- Random Init for Gradient Descent ----------
-rng_init = np.random.default_rng(seed_init)
+rng_init = np.random.default_rng(st.session_state.seed_init)
 w_s = rng_init.normal(loc=0.0, scale=1.0)  # 在標準化空間初始化
 b_s = rng_init.normal(loc=0.0, scale=1.0)
 
@@ -84,13 +116,13 @@ def finite(x):
 
 loss_hist = []
 wb_hist = []
-lr = lr_init
+lr = st.session_state.lr_init
 best_loss = np.inf
 best_wb = (w_s, b_s)
 patience = 30  # 容許若干次上升後仍持續嘗試
 bad_steps = 0
 
-for t in range(n_iters):
+for t in range(st.session_state.n_iters):
     # 預測 (在標準化空間)
     y_pred_s = w_s * Xtr_s[:, 0] + b_s
     err = y_pred_s - ytr_s
@@ -232,4 +264,38 @@ st.markdown(
     "- **Evaluation**：R² / RMSE / MAE 與 Loss Curve。\n"
     "- **Deployment**：本機 `streamlit run app.py`，或部署到 Streamlit Cloud。"
 )
+
+# ---------- Bottom Toolbar ----------
+# This container creates the fixed toolbar at the bottom
+with st.container():
+    st.markdown('<div class="x-toolbar">', unsafe_allow_html=True)
+    with st.form(key="bottom_toolbar"):
+        # Use a container to manage the layout within the toolbar
+        c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 2, 2])
+        with c1:
+            n_samples_form = st.slider("樣本數", 30, 1000, st.session_state.n_samples, step=10, key="form_n_samples")
+            noise_form = st.slider("噪聲標準差", 0.0, 10.0, st.session_state.noise, 0.1, key="form_noise")
+        with c2:
+            lr_init_form = st.slider("初始學習率", 1e-5, 1e-1, st.session_state.lr_init, format="%.5f", key="form_lr_init")
+            n_iters_form = st.slider("最大迭代次數", 10, 3000, st.session_state.n_iters, step=10, key="form_n_iters")
+        with c3:
+            seed_data_form = st.number_input("資料亂數種子", min_value=0, value=st.session_state.seed_data, step=1, key="form_seed_data")
+            seed_init_form = st.number_input("參數初始亂數種子", min_value=0, value=st.session_state.seed_init, step=1, key="form_seed_init")
+        with c4:
+            use_standardize_form = st.checkbox("使用特徵標準化", st.session_state.use_standardize, help="對 X、y 做標準化再用 GD，最後再轉回原始座標。", key="form_use_standardize")
+        with c5:
+            submitted = st.form_submit_button("套用設定並重跑")
+
+        if submitted:
+            # On submission, update the session state
+            st.session_state.n_samples = n_samples_form
+            st.session_state.noise = noise_form
+            st.session_state.lr_init = lr_init_form
+            st.session_state.n_iters = n_iters_form
+            st.session_state.seed_data = seed_data_form
+            st.session_state.seed_init = seed_init_form
+            st.session_state.use_standardize = use_standardize_form
+            # Rerun the script to apply changes
+            st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 
